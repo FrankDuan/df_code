@@ -107,6 +107,8 @@ function configure_df_plugin {
         iniset $NEUTRON_CONF df enable_df_pub_sub "$DF_PUB_SUB"
         iniset $NEUTRON_CONF df pub_sub_use_multiproc "$DF_PUB_SUB_USE_MULTIPROC"
         iniset $NEUTRON_CONF df publishers_ips "$PUBLISHERS_HOSTS"
+        iniset $NEUTRON_CONF df enable_selective_topology_distribution \
+                                $DF_SELECTIVE_TOPO_DIST"
         iniset $NEUTRON_CONF DEFAULT advertise_mtu "True"
         iniset $NEUTRON_CONF DEFAULT core_plugin "$Q_PLUGIN_CLASS"
         iniset $NEUTRON_CONF DEFAULT service_plugins ""
@@ -149,6 +151,8 @@ function configure_df_plugin {
         iniset $NEUTRON_CONF df_l2_app l2_responder "$DF_L2_RESPONDER"
         iniset $NEUTRON_CONF df enable_df_pub_sub "$DF_PUB_SUB"
         iniset $NEUTRON_CONF df publishers_ips "$PUBLISHERS_HOSTS"
+        iniset $NEUTRON_CONF df enable_selective_topology_distribution \
+                                $DF_SELECTIVE_TOPO_DIST"
     fi
 }
 
