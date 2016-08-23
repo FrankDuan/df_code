@@ -1,0 +1,262 @@
+Binary files ./dragonflow_baseline/dragonflow/controller/common/arp_responder.pyc and ./dragonflow/dragonflow/controller/common/arp_responder.pyc differ
+Binary files ./dragonflow_baseline/dragonflow/controller/common/constants.pyc and ./dragonflow/dragonflow/controller/common/constants.pyc differ
+Binary files ./dragonflow_baseline/dragonflow/controller/common/icmp_responder.pyc and ./dragonflow/dragonflow/controller/common/icmp_responder.pyc differ
+Binary files ./dragonflow_baseline/dragonflow/controller/common/__init__.pyc and ./dragonflow/dragonflow/controller/common/__init__.pyc differ
+Binary files ./dragonflow_baseline/dragonflow/controller/common/utils.pyc and ./dragonflow/dragonflow/controller/common/utils.pyc differ
+Binary files ./dragonflow_baseline/dragonflow/controller/df_base_app.pyc and ./dragonflow/dragonflow/controller/df_base_app.pyc differ
+Binary files ./dragonflow_baseline/dragonflow/controller/df_db_notifier.pyc and ./dragonflow/dragonflow/controller/df_db_notifier.pyc differ
+diff -ruN ./dragonflow_baseline/dragonflow/controller/df_local_controller.py ./dragonflow/dragonflow/controller/df_local_controller.py
+--- ./dragonflow_baseline/dragonflow/controller/df_local_controller.py	2016-08-23 11:00:56.763869000 +0800
++++ ./dragonflow/dragonflow/controller/df_local_controller.py	2016-08-19 17:34:24.324213662 +0800
+@@ -387,8 +387,7 @@
+             self._delete_router_route(new_router, old_route)
+ 
+     def _add_router_route(self, router, route):
+-        LOG.info(_LI("Adding new logical router route = %s") %
+-                 str(route))
++        LOG.info(_LI("Adding new logical router route = %s") % route)
+         self.open_flow_app.notify_add_router_route(
+             router, route)
+ 
+diff -ruN ./dragonflow_baseline/dragonflow/controller/dispatcher.py ./dragonflow/dragonflow/controller/dispatcher.py
+--- ./dragonflow_baseline/dragonflow/controller/dispatcher.py	2016-08-23 11:00:56.751869000 +0800
++++ ./dragonflow/dragonflow/controller/dispatcher.py	2016-08-19 17:21:59.714977506 +0800
+@@ -40,4 +40,7 @@
+         for app in self.apps:
+             handler = getattr(app, method, None)
+             if handler is not None:
+-                handler(*args, **kwargs)
++                try:
++                    handler(*args, **kwargs)
++                except Exception as e:
++                    LOG.exception(e)
+Binary files ./dragonflow_baseline/dragonflow/controller/dispatcher.pyc and ./dragonflow/dragonflow/controller/dispatcher.pyc differ
+Binary files ./dragonflow_baseline/dragonflow/controller/__init__.pyc and ./dragonflow/dragonflow/controller/__init__.pyc differ
+diff -ruN ./dragonflow_baseline/dragonflow/controller/l3_proactive_app.py ./dragonflow/dragonflow/controller/l3_proactive_app.py
+--- ./dragonflow_baseline/dragonflow/controller/l3_proactive_app.py	2016-08-23 11:00:56.767869000 +0800
++++ ./dragonflow/dragonflow/controller/l3_proactive_app.py	2016-08-22 21:24:36.572531265 +0800
+@@ -9,7 +9,7 @@
+ #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ #    License for the specific language governing permissions and limitations
+ #    under the License.
+-import copy
++
+ import netaddr
+ from neutron_lib import constants as common_const
+ from oslo_log import log
+@@ -18,13 +18,13 @@
+ 
+ from dragonflow._i18n import _LI
+ from dragonflow.common.exceptions import DBStoreRecordNotFound
+-from dragonflow.common.utils import ExceptionCapturer
+ from dragonflow.controller.common.arp_responder import ArpResponder
+ from dragonflow.controller.common import constants as const
+ from dragonflow.controller.common.icmp_responder import ICMPResponder
+ from dragonflow.controller.df_base_app import DFlowApp
+ 
+-
++ROUTE_TO_ADD = 'route_to_add'
++ROUTE_ADDED = 'route_added'
+ LOG = log.getLogger(__name__)
+ 
+ 
+@@ -126,7 +126,6 @@
+         for port in ports:
+             if port.get_ip() == ip and port.get_lswitch_id() == lswitch_id:
+                 return port
+-        return None
+ 
+     def _get_gateway_port_by_ip(self, router, ip):
+         for port in router.get_ports():
+@@ -138,65 +137,60 @@
+             record='RouterPort(router=%s, ip=%s)' % (router.get_name(), ip))
+ 
+     # route cache got following structure
+-    # {router: {'added': set(route), 'to_add': set(route)}
+-    def _add_to_route_cache(self, key, router, route):
+-        cached_router = self.route_cache.get(router, None)
+-        routes = set()
+-        if cached_router is None:
+-            self.route_cache[router] = {'added': set(), 'to_add': set()}
+-        if key == 'added':
+-            routes = self.route_cache[router].get('added')
+-        elif key == 'to_add':
+-            routes = self.route_cache[router].get('to_add')
+-        routes.add(
+-            (route.get('destination'), route.get('nexthop')))
+-
+-    def _del_from_route_cache(self, key, router, route):
+-        cached_router = self.route_cache.get(router, None)
+-        routes = set()
+-        if cached_router is None:
++    # {router: {ROUTE_ADDED: set(route), ROUTE_TO_ADD: set(route)}
++    def _add_to_route_cache(self, key, router_id, route):
++        cached_routes = self.route_cache.get(router_id)
++        if cached_routes is None:
++            cached_routes = {ROUTE_ADDED: set(), ROUTE_TO_ADD: set()}
++            self.route_cache[router_id] = cached_routes
++        routes = cached_routes.get(key)
++        routes.add((route.get('destination'), route.get('nexthop')))
++
++    def _del_from_route_cache(self, key, router_id, route):
++        cached_routes = self.route_cache.get(router_id)
++        if cached_routes is None:
+             return
+-        if key == 'added':
+-            routes = self.route_cache[router].get('added')
+-        elif key == 'to_add':
+-            routes = self.route_cache[router].get('to_add')
++        routes = cached_routes.get(key)
+         routes.discard(
+             (route.get('destination'), route.get('nexthop')))
+ 
+     def _reprocess_to_add_route(self, topic, port_ip):
+-        LOG.info(_LI('reprocess to add routes again'))
+-        for router in self.db_store.get_routes(topic):
+-            cached_router = self.route_cache.get(router, None)
+-            if cached_router is None:
++        LOG.debug('reprocess to add routes again')
++        for router in self.db_store.get_routers(topic):
++            router_id = router.get_id()
++            cached_routes = self.route_cache.get(router_id)
++            if cached_routes is None:
+                 continue
+-            routes_to_add = self.route_cache[router].get('to_add')
+-            LOG.info(_LI('routes to add: %s'), str(routes_to_add))
+-            for route in copy.deepcopy(routes_to_add):
++            routes_to_add = cached_routes.get(ROUTE_TO_ADD)
++            LOG.debug('routes to add: %s', routes_to_add)
++            for route in routes_to_add:
+                 if port_ip != route[1]:
+                     continue
+                 route_dict = dict(zip(['destination', 'nexthop'], route))
+                 added = self._add_route_route(router, route_dict)
+                 if added:
+-                    self._add_to_route_cache('added', router, route_dict)
+-                    self._del_from_route_cache('to_add', router, route_dict)
++                    self._add_to_route_cache(ROUTE_ADDED, router, route_dict)
++                    self._del_from_route_cache(ROUTE_TO_ADD, router,
++                                               route_dict)
+ 
+     def _reprocess_to_del_route(self, topic, port_ip):
+-        LOG.info(_LI('reprocess to del routes again'))
++        LOG.debug('reprocess to del routes again')
+         for router in self.db_store.get_routers(topic):
+-            cached_router = self.route_cache.get(router, None)
+-            if cached_router is None:
++            router_id = router.get_id()
++            cached_routes = self.route_cache.get(router_id, None)
++            if cached_routes is None:
+                 continue
+-            routes_added = self.route_cache[router].get('added')
+-            for route in copy.deepcopy(routes_added):
++            routes_added = cached_routes.get(ROUTE_ADDED)
++            for route in routes_added:
+                 if port_ip != route[1]:
+                     continue
+                 route_dict = dict(zip(['destination', 'nexthop'], route))
+                 deleted = self._remove_router_route(router, route_dict)
+                 if deleted:
+-                    self._del_from_route_cache('added', router, route_dict)
+-                self._add_to_route_cache('to_add', router, route_dict)
++                    self._del_from_route_cache(ROUTE_ADDED, router_id,
++                                               route_dict)
++                self._add_to_route_cache(ROUTE_TO_ADD, router_id, route_dict)
+ 
+-    @ExceptionCapturer
+     def _add_router_route(self, router, route):
+ 
+         datapath = self.get_datapath()
+@@ -268,11 +262,10 @@
+ 
+         added = self._add_router_route(router, route)
+         if added:
+-            self._add_to_route_cache('added', router, route)
++            self._add_to_route_cache(ROUTE_ADDED, router, route)
+         else:
+-            self._add_to_route_cache('to_add', router, route)
++            self._add_to_route_cache(ROUTE_TO_ADD, router, route)
+ 
+-    @ExceptionCapturer
+     def _remove_router_route(self, router, route):
+ 
+         datapath = self.get_datapath()
+@@ -326,16 +319,13 @@
+ 
+         return True
+ 
+-    @ExceptionCapturer
+     def remove_router_route(self, router, route):
+-        LOG.info(_LI('Delete extra route %(route)s from router %(router)s') %
++        LOG.debug('Delete extra route %(route)s from router %(router)s' %
+                  {'route': route, 'router': str(router)})
+ 
+-        deleted = self._remove_router_route(router, route)
+-        if deleted:
+-            self._del_from_route_cache('added', router, route)
+-        else:
+-            self._del_from_route_cache('to_add', router, route)
++        self._remove_router_route(router, route)
++        self._del_from_route_cache(ROUTE_ADDED, router.get_id(), route)
++        self._del_from_route_cache(ROUTE_TO_ADD, router.get_id(), route)
+ 
+     def _install_flow_send_to_output_table(self, network_id,
+                                            tunnel_key, dst_ip):
+@@ -466,11 +456,11 @@
+             match=match)
+ 
+     def add_local_port(self, lport):
+-        LOG.info(_LI('add local port: %s'), str(lport))
++        LOG.debug('add local port: %s', str(lport))
+         self._add_port(lport)
+ 
+     def add_remote_port(self, lport):
+-        LOG.info(_LI('add remote port: %s'), str(lport))
++        LOG.debug('add remote port: %s', str(lport))
+         self._add_port(lport)
+ 
+     def _add_port(self, lport):
+@@ -515,11 +505,11 @@
+             match=match)
+ 
+     def remove_local_port(self, lport):
+-        LOG.info(_LI('remove local port:%s'), str(lport))
++        LOG.debug('remove local port:%s', str(lport))
+         self._remove_port(lport)
+ 
+     def remove_remote_port(self, lport):
+-        LOG.info(_LI('remove remote port:%s'), str(lport))
++        LOG.debug('remove remote port:%s', str(lport))
+         self._remove_port(lport)
+ 
+     def _remove_port(self, lport):
+Binary files ./dragonflow_baseline/dragonflow/controller/l3_proactive_app.pyc and ./dragonflow/dragonflow/controller/l3_proactive_app.pyc differ
+Binary files ./dragonflow_baseline/dragonflow/controller/ryu_base_app.pyc and ./dragonflow/dragonflow/controller/ryu_base_app.pyc differ
+diff -ruN ./dragonflow_baseline/dragonflow/controller/topology.py ./dragonflow/dragonflow/controller/topology.py
+--- ./dragonflow_baseline/dragonflow/controller/topology.py	2016-08-23 11:00:56.767869000 +0800
++++ ./dragonflow/dragonflow/controller/topology.py	2016-08-22 21:17:59.626427374 +0800
+@@ -245,6 +245,11 @@
+             self.controller.floatingip_updated(floating_ip)
+ 
+     def _clear_tenant_topology(self, tenant_id):
++        switches = self.db_store.get_lswitchs()
++        for switch in switches:
++            if tenant_id == switch.get_topic():
++                self.controller.logical_switch_deleted(switch.get_id())
++
+         ports = self.db_store.get_ports()
+         for port in ports:
+             if tenant_id == port.get_topic():
+@@ -260,11 +265,6 @@
+             if tenant_id == router.get_topic():
+                 self.controller.router_deleted(router.get_id())
+ 
+-        switches = self.db_store.get_lswitchs()
+-        for switch in switches:
+-            if tenant_id == switch.get_topic():
+-                self.controller.logical_switch_deleted(switch.get_id())
+-
+         sg_groups = self.db_store.get_security_groups()
+         for sg_group in sg_groups:
+             if tenant_id == sg_group.get_topic():
+Binary files ./dragonflow_baseline/dragonflow/controller/topology.pyc and ./dragonflow/dragonflow/controller/topology.pyc differ
